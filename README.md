@@ -43,7 +43,7 @@ cd 141
 python3 141.py
 ```
 
-The first launch asks you to create a password for username `appu`. Enter the password privately at the hidden prompt. 141 stores only a salted PBKDF2 hash in your user config directory, outside the clone; it does not store the plaintext password in the repository.
+The app starts directly and displays the configured user label `appu`. No password is requested or stored.
 
 ## Menu and chat commands
 
@@ -58,13 +58,11 @@ The main menu provides local AI chat, Ollama/model status, help, and exit. In AI
 
 The model cannot call tools through this app, and its responses are never executed. `!` commands run with the current operating-system account's permissions. Run Kali as a normal user rather than root, and only run commands on systems you own or have explicit permission to assess.
 
-## Password and local data
+## Identity and local data
 
-- The current source and documentation contain no plaintext password or password hash.
-- The first-run credential file is outside the clone at `~/.config/141/credentials.json` on Linux (or the user's application data directory on Windows); on Linux, 141 sets restrictive directory/file permissions.
+- `appu` is a display label only; it is not authentication or an access-control boundary. Anyone who can run the program can use it. Use operating-system accounts and permissions if access control is required.
 - Chat history stays in process memory and is discarded on exit.
 - Prompts go to the local Ollama service. Do not configure Ollama to use a remote/cloud model if you need local-only processing.
-- If the local credential file is lost, remove it and start 141 to set a new password. Keep that file private and do not commit it.
 
 ## Limits
 
