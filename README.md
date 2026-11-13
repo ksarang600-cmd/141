@@ -2,77 +2,80 @@
 
 **Founder: Sarang**
 
-141 is a menu-driven Python CLI that uses a locally running model through [Ollama](https://ollama.com/). Its colored terminal menu offers local AI chat, model status, and help. The app sends chat requests only to `127.0.0.1:11434`; it does not use a cloud API or send telemetry. The included Ollama `Modelfile` creates a local model tag named `141` from Qwen 3 4B. This is a customized model configuration, not a foundation model trained from scratch.
+141 is a menu-driven Python CLI for defensive security help and authorized testing. It loads a local GGUF language model directly into the 141 process through `llama.cpp` using `llama-cpp-python`. It does not require Ollama, a model server, a cloud API, or network access during inference. The app displays `appu` as a user label; it is not authentication. Model output is advice and is never executed. A shell command runs only when the operator explicitly enters `!<command>`.
 
-The 141 application code is licensed under MIT. Ollama and the downloaded base model have separate terms; review the model license before use.
+141 is the application and inference integration. The GGUF weights are a separate open model, downloaded by the user and governed by that model's license. The example below uses Qwen3 4B GGUF; this is not a model trained by the 141 project.
 
-## Kali quick start
+The 141 application code is licensed under MIT. Review the licenses of `llama-cpp-python` and the selected model before use.
 
-### 1. Install Ollama
+## Kali setup
 
-Follow Ollama's official [Linux install instructions](https://ollama.com/download/linux). The official installer command shown there is:
+### 1. Install native build tools and create a virtual environment
+
+`llama-cpp-python` builds the llama.cpp runtime for the local machine. On Kali, install the build tools, then create an isolated Python environment:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
+sudo apt update
+sudo apt install -y python3-venv python3-dev build-essential cmake libopenblas-dev
+cd ~/141
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install -r requirements.txt
 ```
 
-Review the installer and use Ollama's official documentation if you prefer a manual install. Keep Ollama bound to localhost; do not expose its API to a network you do not control.
+### 2. Download a local GGUF model
 
-### 2. Download the base model and create local model `141`
-
-Start the local service if your installation has not already started it:
+The default configuration expects `models/Qwen3-4B-Q4_K_M.gguf` (about 2.5 GB). Download it from the [Qwen GGUF model repository](https://huggingface.co/Qwen/Qwen3-4B-GGUF):
 
 ```bash
-ollama serve
+python -m pip install huggingface_hub
+mkdir -p models
+hf download Qwen/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf --local-dir models
 ```
 
-In another terminal, from the cloned repository directory:
+Keep model weights out of Git. Check available RAM and disk space first; inference speed depends on your Kali VM's allocated CPU and memory.
+
+To use a different GGUF file, set its path before starting 141:
 
 ```bash
-ollama pull qwen3:4b
-ollama create 141 -f Modelfile
+export LLAMA_MODEL_PATH="$HOME/models/your-model.gguf"
 ```
 
-Ollama lists `qwen3:4b` at about 2.5 GB on disk; actual memory use and speed depend on your system. [Model details](https://ollama.com/library/qwen3)
-
-### 3. Clone and launch 141
+### 3. Run 141
 
 ```bash
-git clone https://github.com/ksarang600-cmd/141.git
-cd 141
+cd ~/141
+source .venv/bin/activate
 python3 141.py
 ```
 
-The app starts directly and displays the configured user label `appu`. No password is requested or stored.
+The first chat request loads the selected model into this process. The model is not automatically downloaded by 141.
 
 ## Menu and chat commands
 
-The main menu provides local AI chat, Ollama/model status, help, and exit. In AI chat:
+The main menu provides local AI chat, model status, help, and exit. In chat:
 
 - Enter ordinary text to chat with the local model.
 - `/help` lists commands.
-- `/model` shows the selected local model; `/model qwen3:4b` changes it for this session.
+- `/model` displays the selected GGUF file.
+- `/model PATH` selects another existing local `.gguf` file for this session.
 - `/clear` clears the in-memory chat history.
-- `!<command>` runs a command you explicitly entered in the current operating-system shell.
+- `!<command>` runs a command you explicitly entered in the operating-system shell.
 - `/exit` quits.
 
-The model cannot call tools through this app, and its responses are never executed. `!` commands run with the current operating-system account's permissions. Run Kali as a normal user rather than root, and only run commands on systems you own or have explicit permission to assess.
+The model cannot call tools through this app, and its responses are never executed. `!` commands run with the current operating-system account's permissions. Run Kali as a normal user rather than root, and only assess systems you own or are explicitly authorized to test.
 
-## Identity and local data
+## Local data and limits
 
-- `appu` is a display label only; it is not authentication or an access-control boundary. Anyone who can run the program can use it. Use operating-system accounts and permissions if access control is required.
-- Chat history stays in process memory and is discarded on exit.
-- Prompts go to the local Ollama service. Do not configure Ollama to use a remote/cloud model if you need local-only processing.
-
-## Limits
-
-- Responses can be wrong, incomplete, or unsafe. Verify guidance using trusted documentation and deterministic tools.
-- Use active testing only in an isolated lab or on systems you own or have explicit permission to assess.
-- Local inference can be slow on CPU-only hardware; model downloads require disk space and internet access.
+- `appu` is only a display label; anyone who can run the program can use it. Use operating-system accounts and permissions for access control.
+- The GGUF file stays on disk at the path you choose. Do not commit model weights, secrets, or private data to Git.
+- Chat history stays in process memory and is discarded on exit. Prompts are processed by the selected local model; 141 does not send telemetry.
+- Responses can be wrong or unsafe. Verify important guidance using trusted documentation and deterministic tools.
+- Local inference can be slow or fail when the VM does not have enough RAM, CPU, or disk space.
 
 ## References
 
-- [Ollama Linux install](https://ollama.com/download/linux)
-- [Ollama Modelfile reference](https://docs.ollama.com/modelfile)
-- [Ollama chat API](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion)
-- [Qwen 3 model library](https://ollama.com/library/qwen3)
+- [llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
+- [Qwen3 4B GGUF](https://huggingface.co/Qwen/Qwen3-4B-GGUF)
+- [Qwen3 model license and information](https://huggingface.co/Qwen/Qwen3-4B)
