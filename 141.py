@@ -1,33 +1,36 @@
 #!/usr/bin/env python3
-"""141: local-first security assistant for Kali Linux and other systems.
+"""141: local-first security assistant using an in-process llama.cpp model.
 
-The assistant sends chat requests only to Ollama on localhost. Model output is
-never executed. A command runs only when the operator explicitly enters !<cmd>.
+Inference runs in this Python process from a user-supplied GGUF model file.
+Model output is never executed. A command runs only when the operator
+explicitly enters !<cmd>.
 """
 
 from __future__ import annotations
 
 import os
-import json
 import re
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from collections import deque
+from pathlib import Path
 
 
 TOOL_NAME = "141"
 FOUNDER = "Sarang"
 LOGIN_USER = "appu"
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
-DEFAULT_MODEL = "141"
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_MODEL_PATH = PROJECT_DIR / "models" / "Qwen3-4B-Q4_K_M.gguf"
+MAX_MODEL_BYTES = 40 * 1024**3
+MODEL_CONTEXT_TOKENS = 4096
+MODEL_MAX_OUTPUT_TOKENS = 1024
 MAX_INPUT_CHARS = 20_000
 MAX_SHELL_CHARS = 4_096
 MAX_HISTORY_MESSAGES = 20
-HTTP_TIMEOUT_SECONDS = 180
+MODEL_THREADS = max(1, min(os.cpu_count() or 2, 8))
+_loaded_model = None
+_loaded_model_path: Path | None = None
 
 SYSTEM_PROMPT = """You are 141, a local security engineering assistant.
 Help with defensive cybersecurity and authorized testing in labs or on systems
@@ -54,43 +57,78 @@ def clean_text(value: str, limit: int) -> str:
     return value
 
 
+def selected_model_path() -> Path:
+    """Resolve a configured GGUF path, keeping relative paths inside the project."""
+    candidate = os.environ.get("LLAMA_MODEL_PATH", str(DEFAULT_MODEL_PATH)).strip()
+    if not candidate or len(candidate) > 4096 or "\x00" in candidate:
+        raise ValueError("LLAMA_MODEL_PATH is empty or invalid.")
+    path = Path(candidate).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_DIR / path
+    path = path.resolve()
+    if path.suffix.casefold() != ".gguf":
+        raise ValueError("The model path must point to a .gguf file.")
+    return path
+
+
 def model_name() -> str:
-    candidate = os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL).strip()
-    if not candidate or len(candidate) > 100 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", candidate):
-        raise ValueError("OLLAMA_MODEL contains invalid characters.")
-    return candidate
+    return selected_model_path().name
+
+
+def load_local_model():
+    """Load a local GGUF model directly through llama.cpp, without a server."""
+    global _loaded_model, _loaded_model_path
+    path = selected_model_path()
+    if not path.is_file():
+        raise RuntimeError(
+            f"Model file not found: {path}. See README.md to download a GGUF model."
+        )
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect model file: {exc}") from exc
+    if size < 1_000_000 or size > MAX_MODEL_BYTES:
+        raise RuntimeError("Model file size is outside the supported 1 MB–40 GB range.")
+    if _loaded_model is not None and _loaded_model_path == path:
+        return _loaded_model
+    try:
+        from llama_cpp import Llama
+    except ImportError as exc:
+        raise RuntimeError(
+            "llama-cpp-python is not installed. Activate the project virtual environment "
+            "and install requirements.txt."
+        ) from exc
+    try:
+        _loaded_model = Llama(
+            model_path=str(path),
+            n_ctx=MODEL_CONTEXT_TOKENS,
+            n_threads=MODEL_THREADS,
+            verbose=False,
+        )
+    except Exception as exc:
+        _loaded_model = None
+        _loaded_model_path = None
+        raise RuntimeError(f"Could not load GGUF model: {exc}") from exc
+    _loaded_model_path = path
+    return _loaded_model
 
 
 def ask_local_model(messages: list[dict[str, str]]) -> str:
-    """Send one non-streaming request to the loopback-only Ollama API."""
-    payload = {
-        "model": model_name(),
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
-        "stream": False,
-    }
-    request = urllib.request.Request(
-        OLLAMA_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    """Run chat inference in this process using the selected local GGUF file."""
+    model = load_local_model()
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read(500).decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail or exc.reason}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError(
-            "Could not reach Ollama at 127.0.0.1:11434. Start Ollama and pull the selected model."
-        ) from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Ollama returned an invalid response.") from exc
-
-    message = result.get("message")
+        result = model.create_chat_completion(
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+            max_tokens=MODEL_MAX_OUTPUT_TOKENS,
+            temperature=0.3,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Local model inference failed: {exc}") from exc
+    choices = result.get("choices") if isinstance(result, dict) else None
+    message = choices[0].get("message") if isinstance(choices, list) and choices else None
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
-        raise RuntimeError("Ollama returned no assistant text.")
+        raise RuntimeError("The local model returned no assistant text.")
     return content.strip()
 
 
@@ -121,7 +159,7 @@ def show_menu(selected_model: str) -> None:
     show_banner(selected_model)
     print()
     print(paint("  [1]  Local AI chat", "32;1"))
-    print("  [2]  Check Ollama and installed models")
+    print("  [2]  Check local model and inference runtime")
     print("  [3]  Help and authorized-use rules")
     print("  [0]  Exit")
     print()
@@ -129,23 +167,25 @@ def show_menu(selected_model: str) -> None:
 
 
 def show_model_status(selected_model: str) -> None:
-    print("\n[OLLAMA STATUS]")
+    print("\n[LOCAL MODEL STATUS]")
     try:
-        request = urllib.request.Request(OLLAMA_TAGS_URL, method="GET")
-        with urllib.request.urlopen(request, timeout=5) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        models = result.get("models", [])
-        names = [item.get("name", "") for item in models if isinstance(item, dict)]
-        if not names:
-            print("Ollama is running, but no local models are installed.")
-            print("Use: ollama pull qwen3:4b && ollama create 141 -f Modelfile")
-            return
-        print("Ollama is running at 127.0.0.1:11434.")
-        for name in names:
-            marker = " (selected)" if name == selected_model or name.startswith(selected_model + ":") else ""
-            print(f"  - {name}{marker}")
-    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        print("Could not reach Ollama at 127.0.0.1:11434. Start the local service first.")
+        path = selected_model_path()
+    except ValueError as exc:
+        print(f"Model path configuration error: {exc}")
+        return
+    print(f"Runtime: llama.cpp (in process) | Threads: {MODEL_THREADS}")
+    print(f"Selected model: {selected_model}")
+    if path.is_file():
+        size_gib = path.stat().st_size / (1024**3)
+        print(f"Model file: {path} ({size_gib:.2f} GiB)")
+        try:
+            import llama_cpp
+            print(f"llama-cpp-python: available ({llama_cpp.__version__})")
+        except (ImportError, AttributeError):
+            print("llama-cpp-python: not installed; install requirements.txt in .venv")
+    else:
+        print(f"Model file is missing: {path}")
+        print("See README.md for download and setup instructions.")
 
 
 def run_explicit_shell_command(command: str) -> int:
@@ -187,7 +227,7 @@ def print_help() -> None:
 /help          Show commands and setup notes.
 /clear         Clear the in-memory conversation.
 /model         Show the selected local model.
-/model NAME    Change the model for this session.
+/model PATH    Change to a local GGUF model file for this session.
 /menu          Return to the main menu.
 !<command>     Run an explicitly entered command in your system shell.
 /exit          Exit.
@@ -227,12 +267,22 @@ def chat_loop(history: deque[dict[str, str]], selected_model: str) -> str | None
             continue
         if line.casefold().startswith("/model "):
             candidate = line[7:].strip()
-            if not candidate or len(candidate) > 100 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", candidate):
-                print("[INPUT ERROR] Use a valid local model name, for example 141.")
+            if not candidate or len(candidate) > 4096 or "\x00" in candidate:
+                print("[INPUT ERROR] Supply a valid path to an existing .gguf model file.")
                 continue
-            selected_model = candidate
-            os.environ["OLLAMA_MODEL"] = selected_model
-            print(f"[MODEL] Selected {selected_model}; confirm it is installed in Ollama.")
+            candidate_path = Path(candidate).expanduser()
+            if not candidate_path.is_absolute():
+                candidate_path = PROJECT_DIR / candidate_path
+            candidate_path = candidate_path.resolve()
+            if candidate_path.suffix.casefold() != ".gguf" or not candidate_path.is_file():
+                print("[INPUT ERROR] Model must be an existing local .gguf file.")
+                continue
+            if not 1_000_000 <= candidate_path.stat().st_size <= MAX_MODEL_BYTES:
+                print("[INPUT ERROR] Model file size must be between 1 MB and 40 GB.")
+                continue
+            selected_model = candidate_path.name
+            os.environ["LLAMA_MODEL_PATH"] = str(candidate_path)
+            print(f"[MODEL] Selected local model: {selected_model}")
             continue
         if line.startswith("!"):
             run_explicit_shell_command(line[1:])
@@ -297,7 +347,7 @@ def main() -> int:
         return 2
 
     print(f"Welcome back, Boss! {TOOL_NAME} is ready. Model: {selected_model}")
-    print("Local Ollama only; model output is not executed.")
+    print("In-process llama.cpp; model output is not executed.")
     return menu_loop(selected_model)
 
 
