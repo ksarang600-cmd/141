@@ -2,7 +2,7 @@
 
 **Founder: Sarang**
 
-141 is a small Python chat CLI that uses a locally running model through [Ollama](https://ollama.com/). The app sends chat requests only to `127.0.0.1:11434`; it does not use a cloud API or send telemetry. The included Ollama `Modelfile` creates a local model tag named `141` from Qwen 3 4B. This is a customized model configuration, not a foundation model trained from scratch.
+141 is a menu-driven Python CLI that uses a locally running model through [Ollama](https://ollama.com/). Its colored terminal menu offers local AI chat, model status, and help. The app sends chat requests only to `127.0.0.1:11434`; it does not use a cloud API or send telemetry. The included Ollama `Modelfile` creates a local model tag named `141` from Qwen 3 4B. This is a customized model configuration, not a foundation model trained from scratch.
 
 The 141 application code is licensed under MIT. Ollama and the downloaded base model have separate terms; review the model license before use.
 
@@ -45,7 +45,9 @@ python3 141.py
 
 The first launch asks you to create a password for username `appu`. Enter the password privately at the hidden prompt. 141 stores only a salted PBKDF2 hash in your user config directory, outside the clone; it does not store the plaintext password in the repository.
 
-## Commands
+## Menu and chat commands
+
+The main menu provides local AI chat, Ollama/model status, help, and exit. In AI chat:
 
 - Enter ordinary text to chat with the local model.
 - `/help` lists commands.

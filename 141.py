@@ -27,6 +27,7 @@ TOOL_NAME = "141"
 FOUNDER = "Sarang"
 LOGIN_USER = "appu"
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 DEFAULT_MODEL = "141"
 MAX_INPUT_CHARS = 20_000
 MAX_SHELL_CHARS = 4_096
@@ -183,6 +184,60 @@ def ask_local_model(messages: list[dict[str, str]]) -> str:
     return content.strip()
 
 
+def paint(text: str, color_code: str) -> str:
+    if sys.stdout.isatty() and "NO_COLOR" not in os.environ:
+        return f"\033[{color_code}m{text}\033[0m"
+    return text
+
+
+def clear_screen() -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+
+
+def show_banner(selected_model: str, section: str = "MAIN MENU") -> None:
+    title = f" {TOOL_NAME}  |  LOCAL SECURITY AI  |  {section} "
+    width = max(56, len(title) + 4)
+    edge = "═" * (width - 2)
+    print(paint(f"╔{edge}╗", "36;1"))
+    print(paint(f"║{title.center(width - 2)}║", "36;1"))
+    print(paint(f"║{'Founder: ' + FOUNDER + '   Model: ' + selected_model:<{width - 2}}║", "32"))
+    print(paint(f"╚{edge}╝", "36;1"))
+
+
+def show_menu(selected_model: str) -> None:
+    clear_screen()
+    show_banner(selected_model)
+    print()
+    print(paint("  [1]  Local AI chat", "32;1"))
+    print("  [2]  Check Ollama and installed models")
+    print("  [3]  Help and authorized-use rules")
+    print("  [0]  Exit")
+    print()
+    print("  Model output is advice only; 141 never executes it.")
+
+
+def show_model_status(selected_model: str) -> None:
+    print("\n[OLLAMA STATUS]")
+    try:
+        request = urllib.request.Request(OLLAMA_TAGS_URL, method="GET")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        models = result.get("models", [])
+        names = [item.get("name", "") for item in models if isinstance(item, dict)]
+        if not names:
+            print("Ollama is running, but no local models are installed.")
+            print("Use: ollama pull qwen3:4b && ollama create 141 -f Modelfile")
+            return
+        print("Ollama is running at 127.0.0.1:11434.")
+        for name in names:
+            marker = " (selected)" if name == selected_model or name.startswith(selected_model + ":") else ""
+            print(f"  - {name}{marker}")
+    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print("Could not reach Ollama at 127.0.0.1:11434. Start the local service first.")
+
+
 def run_explicit_shell_command(command: str) -> int:
     """Run only a command explicitly entered with !, using the current OS shell."""
     try:
@@ -223,6 +278,7 @@ def print_help() -> None:
 /clear         Clear the in-memory conversation.
 /model         Show the selected local model.
 /model NAME    Change the model for this session.
+/menu          Return to the main menu.
 !<command>     Run an explicitly entered command in your system shell.
 /exit          Exit.
 <text>         Ask the local model for help.
@@ -232,34 +288,23 @@ Active security testing must stay in owned or explicitly authorized scope.
 """)
 
 
-def main() -> int:
-    if not authenticate():
-        print("[AUTH] Access denied.")
-        return 1
-
-    try:
-        selected_model = model_name()
-    except ValueError as exc:
-        print(f"[CONFIG ERROR] {exc}")
-        return 2
-
-    print(f"Welcome back, Boss! {TOOL_NAME} is ready. Model: {selected_model}")
-    print("Type /help for commands. Local Ollama only; model output is not executed.")
-    history: deque[dict[str, str]] = deque(maxlen=MAX_HISTORY_MESSAGES)
-
+def chat_loop(history: deque[dict[str, str]], selected_model: str) -> str | None:
+    clear_screen()
+    show_banner(selected_model, "LOCAL AI CHAT")
+    print("Type /help for chat commands, /menu to return, or /exit to quit.\n")
     while True:
         try:
-            line = input("141> ")
+            line = input("141/chat> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n[SESSION] Exiting.")
-            return 0
+            print("\n[SESSION] Returning to menu.")
+            return selected_model
 
-        line = line.strip()
         if not line:
             continue
+        if line.casefold() == "/menu":
+            return selected_model
         if line.casefold() in {"/exit", "exit", "quit"}:
-            print("[SESSION] Exiting.")
-            return 0
+            return None
         if line.casefold() == "/help":
             print_help()
             continue
@@ -273,7 +318,7 @@ def main() -> int:
         if line.casefold().startswith("/model "):
             candidate = line[7:].strip()
             if not candidate or len(candidate) > 100 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", candidate):
-                print("[INPUT ERROR] Use a valid local model name, for example qwen3:4b.")
+                print("[INPUT ERROR] Use a valid local model name, for example 141.")
                 continue
             selected_model = candidate
             os.environ["OLLAMA_MODEL"] = selected_model
@@ -298,6 +343,54 @@ def main() -> int:
             continue
         history.append({"role": "assistant", "content": answer})
         print(f"\n{answer}\n")
+
+
+def menu_loop(selected_model: str) -> int:
+    history: deque[dict[str, str]] = deque(maxlen=MAX_HISTORY_MESSAGES)
+    while True:
+        show_menu(selected_model)
+        try:
+            choice = input("141/menu> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[SESSION] Exiting.")
+            return 0
+        if choice == "1":
+            updated_model = chat_loop(history, selected_model)
+            if updated_model is None:
+                print("[SESSION] Exiting.")
+                return 0
+            selected_model = updated_model
+        elif choice == "2":
+            clear_screen()
+            show_banner(selected_model, "MODEL STATUS")
+            show_model_status(selected_model)
+            input("\nPress Enter to return to the menu...")
+        elif choice == "3":
+            clear_screen()
+            show_banner(selected_model, "HELP")
+            print_help()
+            input("\nPress Enter to return to the menu...")
+        elif choice == "0":
+            print("[SESSION] Exiting.")
+            return 0
+        else:
+            print("[INPUT ERROR] Choose 1, 2, 3, or 0.")
+
+
+def main() -> int:
+    if not authenticate():
+        print("[AUTH] Access denied.")
+        return 1
+
+    try:
+        selected_model = model_name()
+    except ValueError as exc:
+        print(f"[CONFIG ERROR] {exc}")
+        return 2
+
+    print(f"Welcome back, Boss! {TOOL_NAME} is ready. Model: {selected_model}")
+    print("Local Ollama only; model output is not executed.")
+    return menu_loop(selected_model)
 
 
 if __name__ == "__main__":
