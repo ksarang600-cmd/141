@@ -7,17 +7,12 @@ never executed. A command runs only when the operator explicitly enters !<cmd>.
 
 from __future__ import annotations
 
-import getpass
-import hashlib
-import hmac
-import json
 import os
+import json
 import re
-import secrets
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 import urllib.error
 import urllib.request
 from collections import deque
@@ -33,7 +28,6 @@ MAX_INPUT_CHARS = 20_000
 MAX_SHELL_CHARS = 4_096
 MAX_HISTORY_MESSAGES = 20
 HTTP_TIMEOUT_SECONDS = 180
-PASSWORD_ITERATIONS = 600_000
 
 SYSTEM_PROMPT = """You are 141, a local security engineering assistant.
 Help with defensive cybersecurity and authorized testing in labs or on systems
@@ -47,93 +41,9 @@ user provides evidence. Your text is advice only: this application does not
 execute model-generated commands or code."""
 
 
-def credential_file() -> Path:
-    """Return a per-user config path outside the cloned repository."""
-    if os.name == "nt" and os.environ.get("APPDATA"):
-        base = Path(os.environ["APPDATA"]).expanduser()
-    else:
-        xdg = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
-        base = xdg if xdg.is_absolute() else Path.home() / ".config"
-    return base / TOOL_NAME / "credentials.json"
-
-
-def derive_password_hash(password: str, salt: bytes, iterations: int) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations, dklen=32)
-
-
-def create_local_password(path: Path) -> bool:
-    """Set a password once and save only a salted PBKDF2 hash outside the repo."""
-    print(f"[SETUP] Create a password for username {LOGIN_USER}.")
-    try:
-        first = getpass.getpass("New password (input hidden): ")
-        second = getpass.getpass("Confirm password (input hidden): ")
-    except (EOFError, KeyboardInterrupt):
-        print("\n[SETUP] Password setup cancelled.")
-        return False
-    if len(first) < 8 or len(first) > 1024 or "\x00" in first:
-        print("[SETUP ERROR] Password must be 8–1024 characters and cannot contain NUL.")
-        return False
-    if not hmac.compare_digest(first, second):
-        print("[SETUP ERROR] Passwords do not match.")
-        return False
-
-    salt = secrets.token_bytes(16)
-    record = {
-        "version": 1,
-        "iterations": PASSWORD_ITERATIONS,
-        "salt": salt.hex(),
-        "password_hash": derive_password_hash(first, salt, PASSWORD_ITERATIONS).hex(),
-    }
-    try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
-        if os.name != "nt":
-            path.chmod(0o600)
-    except OSError as exc:
-        print(f"[SETUP ERROR] Could not save local credentials: {exc}")
-        return False
-    print("[SETUP] Password hash saved outside the repository.")
-    return True
-
-
-def verify_local_password(password: str, path: Path) -> bool:
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-        iterations = record.get("iterations")
-        if record.get("version") != 1 or not isinstance(iterations, int) or not 100_000 <= iterations <= 2_000_000:
-            raise ValueError("unsupported credential record")
-        salt = bytes.fromhex(record["salt"])
-        expected = bytes.fromhex(record["password_hash"])
-        if len(salt) != 16 or len(expected) != 32:
-            raise ValueError("invalid credential record")
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Local credential file is invalid: {path}") from exc
-    actual = derive_password_hash(password, salt, iterations)
-    return hmac.compare_digest(actual, expected)
-
-
-def authenticate() -> bool:
-    """Use a local, non-repository PBKDF2 credential file."""
-    path = credential_file()
-    if not path.exists() and not create_local_password(path):
-        return False
-    print(f"{TOOL_NAME} — local sign-in (Founder: {FOUNDER})")
-    for attempt in range(1, 4):
-        try:
-            username = input("Username: ").strip()
-            password = getpass.getpass("Password: ")
-        except (EOFError, KeyboardInterrupt):
-            print("\n[AUTH] Sign-in cancelled.")
-            return False
-        if username == LOGIN_USER:
-            try:
-                if verify_local_password(password, path):
-                    return True
-            except RuntimeError as exc:
-                print(f"[AUTH ERROR] {exc}")
-                return False
-        print(f"[AUTH FAILED] Invalid credentials ({3 - attempt} attempts remaining).")
-    return False
+def show_identity() -> None:
+    """Display the configured local user label; this is not authentication."""
+    print(f"{TOOL_NAME} — user: {LOGIN_USER} (Founder: {FOUNDER})")
 
 
 def clean_text(value: str, limit: int) -> str:
@@ -378,9 +288,7 @@ def menu_loop(selected_model: str) -> int:
 
 
 def main() -> int:
-    if not authenticate():
-        print("[AUTH] Access denied.")
-        return 1
+    show_identity()
 
     try:
         selected_model = model_name()
